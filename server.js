@@ -4,6 +4,7 @@ const port = 3001;
 const { TranscribeStreamingClient, StartStreamTranscriptionCommand } = require('@aws-sdk/client-transcribe-streaming');
 require('dotenv').config();
 const http = require('http');
+const WebSocket = require('ws');
 
 // Middleware to handle raw PCM audio data
 app.use(express.raw({ type: 'audio/L16', limit: '10mb' }));
@@ -19,6 +20,9 @@ const transcribeClient = new TranscribeStreamingClient({
 
 // Store connected video clients
 let videoClients = [];
+
+// Store WebSocket clients
+let wsClients = [];
 
 // Streaming endpoint for ESP32-S3-EYE
 app.post('/stream-audio', async (req, res) => {
@@ -48,6 +52,11 @@ app.post('/stream-audio', async (req, res) => {
           const transcript = results[0].Alternatives[0]?.Transcript;
           if (transcript) {
             res.write(JSON.stringify({ transcript }) + '\n');
+            wsClients.forEach(client => {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify({ type: 'transcript', transcript }));
+              }
+            });
           }
         }
       }
@@ -65,6 +74,11 @@ app.post('/video-stream', (req, res) => {
   req.on('data', (chunk) => {
     videoClients.forEach(client => {
       client.write(chunk);
+    });
+    wsClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(chunk);
+      }
     });
   });
   req.on('end', () => {
@@ -86,6 +100,16 @@ app.get('/video-stream', (req, res) => {
   });
 });
 
-app.listen(port, () => {
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+wss.on('connection', (ws) => {
+  wsClients.push(ws);
+  ws.on('close', () => {
+    wsClients = wsClients.filter(client => client !== ws);
+  });
+});
+
+server.listen(port, () => {
   console.log(`Audio streaming server listening at http://localhost:${port}`);
 }); 
