@@ -93,12 +93,18 @@ app.post('/video-stream', (req, res) => {
   });
   req.on('end', () => {
     const buffer = Buffer.concat(data);
-    // Broadcast the complete JPEG to all WebSocket clients
+    let sentCount = 0;
     wsClients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(buffer);
+        try {
+          client.send(buffer);
+          sentCount++;
+        } catch (err) {
+          console.error('Error sending frame to client:', err);
+        }
       }
     });
+    console.log(`Sent frame to ${sentCount} WebSocket clients. Frame size: ${buffer.length} bytes`);
     res.end('OK');
   });
 });
