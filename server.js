@@ -115,15 +115,34 @@ const options = {
 };
 
 const server = https.createServer(options, app);
-const wss = new WebSocket.Server({ server });
-
-wss.on('connection', (ws) => {
-  wsClients.push(ws);
-  ws.on('close', () => {
-    wsClients = wsClients.filter(client => client !== ws);
-  });
+const wss = new WebSocket.Server({ 
+  server,
+  path: '/',
+  clientTracking: true,
+  perMessageDeflate: false
 });
 
-server.listen(port, () => {
-  console.log(`Audio streaming server listening at https://localhost:${port}`);
+wss.on('connection', (ws, req) => {
+  console.log('New WebSocket connection from:', req.socket.remoteAddress);
+  wsClients.push(ws);
+  
+  ws.on('message', (message) => {
+    console.log('Received message:', message.toString());
+  });
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+  });
+
+  ws.on('close', () => {
+    console.log('Client disconnected');
+    wsClients = wsClients.filter(client => client !== ws);
+  });
+
+  // Send a test message to verify connection
+  ws.send(JSON.stringify({ type: 'connection', status: 'connected' }));
+});
+
+server.listen(port, '0.0.0.0', () => {
+  console.log(`Audio streaming server listening at https://0.0.0.0:${port}`);
 }); 
