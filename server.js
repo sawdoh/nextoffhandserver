@@ -144,5 +144,5 @@ wss.on('connection', (ws, req) => {
 });
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`Audio streaming server listening at https://0.0.0.0:${port}`);
+  console.log(`Server listening at https://0.0.0.0:${port}`);
 }); 
