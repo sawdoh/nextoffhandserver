@@ -4,14 +4,19 @@ const port = 3001;
 const { TranscribeStreamingClient, StartStreamTranscriptionCommand } = require('@aws-sdk/client-transcribe-streaming');
 require('dotenv').config();
 const https = require('https');
+const http = require('http');
 const fs = require('fs');
 const WebSocket = require('ws');
 
-// Enable CORS
+// Enable CORS with more specific headers
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
   next();
 });
 
@@ -109,17 +114,30 @@ app.get('/video-stream', (req, res) => {
   });
 });
 
+// Add a basic health check endpoint
+app.get('/', (req, res) => {
+  res.send('Server is running');
+});
+
 const options = {
   key: fs.readFileSync('./certs/nginx-selfsigned.key'),
-  cert: fs.readFileSync('./certs/nginx-selfsigned.crt')
+  cert: fs.readFileSync('./certs/nginx-selfsigned.crt'),
+  // Allow self-signed certificates
+  rejectUnauthorized: false
 };
 
-const server = https.createServer(options, app);
+// Create both HTTP and HTTPS servers
+const httpServer = http.createServer(app);
+const httpsServer = https.createServer(options, app);
+
+// Create WebSocket server on HTTPS
 const wss = new WebSocket.Server({ 
-  server,
+  server: httpsServer,
   path: '/',
   clientTracking: true,
-  perMessageDeflate: false
+  perMessageDeflate: false,
+  // Allow self-signed certificates
+  rejectUnauthorized: false
 });
 
 wss.on('connection', (ws, req) => {
@@ -143,6 +161,20 @@ wss.on('connection', (ws, req) => {
   ws.send(JSON.stringify({ type: 'connection', status: 'connected' }));
 });
 
-server.listen(port, '0.0.0.0', () => {
-  console.log(`Server listening at https://0.0.0.0:${port}`);
+// Error handling for both servers
+httpServer.on('error', (error) => {
+  console.error('HTTP Server error:', error);
+});
+
+httpsServer.on('error', (error) => {
+  console.error('HTTPS Server error:', error);
+});
+
+// Start both servers
+httpServer.listen(port, '0.0.0.0', () => {
+  console.log(`HTTP Server listening at http://0.0.0.0:${port}`);
+});
+
+httpsServer.listen(port, '0.0.0.0', () => {
+  console.log(`HTTPS Server listening at https://0.0.0.0:${port}`);
 }); 
