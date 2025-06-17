@@ -87,19 +87,19 @@ app.post('/stream-audio', async (req, res) => {
 // Endpoint for ESP32-S3-EYE to POST MJPEG stream
 app.post('/video-stream', (req, res) => {
   console.log('Received video stream request');
-  // Broadcast incoming MJPEG data to all connected clients
+  let data = [];
   req.on('data', (chunk) => {
-    videoClients.forEach(client => {
-      client.write(chunk);
-    });
-    wsClients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(chunk);
-      }
-    });
+    data.push(chunk);
   });
   req.on('end', () => {
-    res.end('Stream ended');
+    const buffer = Buffer.concat(data);
+    // Broadcast the complete JPEG to all WebSocket clients
+    wsClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(buffer);
+      }
+    });
+    res.end('OK');
   });
 });
 
