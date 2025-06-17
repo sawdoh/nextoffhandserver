@@ -42,6 +42,7 @@ let wsClients = [];
 // Streaming endpoint for ESP32-S3-EYE
 app.post('/stream-audio', async (req, res) => {
   try {
+    console.log('Received audio stream request');
     // PCM audio buffer from ESP32-S3-EYE
     const audioStream = req;
 
@@ -85,6 +86,7 @@ app.post('/stream-audio', async (req, res) => {
 
 // Endpoint for ESP32-S3-EYE to POST MJPEG stream
 app.post('/video-stream', (req, res) => {
+  console.log('Received video stream request');
   // Broadcast incoming MJPEG data to all connected clients
   req.on('data', (chunk) => {
     videoClients.forEach(client => {
@@ -103,6 +105,7 @@ app.post('/video-stream', (req, res) => {
 
 // Endpoint for browsers/clients to GET the MJPEG stream
 app.get('/video-stream', (req, res) => {
+  console.log('Received video stream GET request');
   res.writeHead(200, {
     'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
     'Cache-Control': 'no-cache',
@@ -117,15 +120,22 @@ app.get('/video-stream', (req, res) => {
 
 // Add a basic health check endpoint
 app.get('/', (req, res) => {
+  console.log('Received health check request');
   res.send('Server is running');
 });
 
-const options = {
-  key: fs.readFileSync('./certs/nginx-selfsigned.key'),
-  cert: fs.readFileSync('./certs/nginx-selfsigned.crt'),
-  // Allow self-signed certificates
-  rejectUnauthorized: false
-};
+// Load SSL certificates
+let options;
+try {
+  options = {
+    key: fs.readFileSync('./certs/nginx-selfsigned.key'),
+    cert: fs.readFileSync('./certs/nginx-selfsigned.crt'),
+  };
+  console.log('SSL certificates loaded successfully');
+} catch (err) {
+  console.error('Error loading SSL certificates:', err);
+  process.exit(1);
+}
 
 // Create both HTTP and HTTPS servers
 const httpServer = http.createServer(app);
@@ -137,8 +147,6 @@ const wss = new WebSocket.Server({
   path: '/',
   clientTracking: true,
   perMessageDeflate: false,
-  // Allow self-signed certificates
-  rejectUnauthorized: false
 });
 
 wss.on('connection', (ws, req) => {
@@ -146,7 +154,7 @@ wss.on('connection', (ws, req) => {
   wsClients.push(ws);
   
   ws.on('message', (message) => {
-    console.log('Received message:', message.toString());
+    console.log('Received WebSocket message:', message.toString());
   });
 
   ws.on('error', (error) => {
@@ -164,18 +172,38 @@ wss.on('connection', (ws, req) => {
 
 // Error handling for both servers
 httpServer.on('error', (error) => {
-  console.error('HTTP Server error:', error);
+  if (error.code === 'EADDRINUSE') {
+    console.error(`Port ${httpPort} is already in use. Please free up the port or use a different one.`);
+  } else {
+    console.error('HTTP Server error:', error);
+  }
+  process.exit(1);
 });
 
 httpsServer.on('error', (error) => {
-  console.error('HTTPS Server error:', error);
+  if (error.code === 'EADDRINUSE') {
+    console.error(`Port ${httpsPort} is already in use. Please free up the port or use a different one.`);
+  } else {
+    console.error('HTTPS Server error:', error);
+  }
+  process.exit(1);
 });
 
-// Start both servers
-httpServer.listen(httpPort, '0.0.0.0', () => {
-  console.log(`HTTP Server listening at http://0.0.0.0:${httpPort}`);
-});
+// Function to start servers
+function startServers() {
+  try {
+    httpServer.listen(httpPort, '0.0.0.0', () => {
+      console.log(`HTTP Server listening at http://0.0.0.0:${httpPort}`);
+    });
 
-httpsServer.listen(httpsPort, '0.0.0.0', () => {
-  console.log(`HTTPS Server listening at https://0.0.0.0:${httpsPort}`);
-}); 
+    httpsServer.listen(httpsPort, '0.0.0.0', () => {
+      console.log(`HTTPS Server listening at https://0.0.0.0:${httpsPort}`);
+    });
+  } catch (error) {
+    console.error('Error starting servers:', error);
+    process.exit(1);
+  }
+}
+
+// Start the servers
+startServers(); 
