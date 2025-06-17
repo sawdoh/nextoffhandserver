@@ -110,8 +110,8 @@ app.get('/video-stream', (req, res) => {
 });
 
 const options = {
-  key: fs.readFileSync('/etc/ssl/private/nginx-selfsigned.key'),
-  cert: fs.readFileSync('/etc/ssl/certs/nginx-selfsigned.crt')
+  key: fs.readFileSync('./certs/nginx-selfsigned.key'),
+  cert: fs.readFileSync('./certs/nginx-selfsigned.crt')
 };
 
 const server = https.createServer(options, app);
