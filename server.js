@@ -3,8 +3,17 @@ const app = express();
 const port = 3001;
 const { TranscribeStreamingClient, StartStreamTranscriptionCommand } = require('@aws-sdk/client-transcribe-streaming');
 require('dotenv').config();
-const http = require('http');
+const https = require('https');
+const fs = require('fs');
 const WebSocket = require('ws');
+
+// Enable CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  next();
+});
 
 // Middleware to handle raw PCM audio data
 app.use(express.raw({ type: 'audio/L16', limit: '10mb' }));
@@ -100,7 +109,12 @@ app.get('/video-stream', (req, res) => {
   });
 });
 
-const server = http.createServer(app);
+const options = {
+  key: fs.readFileSync('/etc/ssl/private/nginx-selfsigned.key'),
+  cert: fs.readFileSync('/etc/ssl/certs/nginx-selfsigned.crt')
+};
+
+const server = https.createServer(options, app);
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
@@ -111,5 +125,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(port, () => {
-  console.log(`Audio streaming server listening at http://localhost:${port}`);
+  console.log(`Audio streaming server listening at https://localhost:${port}`);
 }); 
