@@ -1,6 +1,7 @@
 const express = require('express');
 const app = express();
-const port = 3001;
+const httpPort = 3001;
+const httpsPort = 3002;
 const { TranscribeStreamingClient, StartStreamTranscriptionCommand } = require('@aws-sdk/client-transcribe-streaming');
 require('dotenv').config();
 const https = require('https');
@@ -171,10 +172,10 @@ httpsServer.on('error', (error) => {
 });
 
 // Start both servers
-httpServer.listen(port, '0.0.0.0', () => {
-  console.log(`HTTP Server listening at http://0.0.0.0:${port}`);
+httpServer.listen(httpPort, '0.0.0.0', () => {
+  console.log(`HTTP Server listening at http://0.0.0.0:${httpPort}`);
 });
 
-httpsServer.listen(port, '0.0.0.0', () => {
-  console.log(`HTTPS Server listening at https://0.0.0.0:${port}`);
+httpsServer.listen(httpsPort, '0.0.0.0', () => {
+  console.log(`HTTPS Server listening at https://0.0.0.0:${httpsPort}`);
 }); 
