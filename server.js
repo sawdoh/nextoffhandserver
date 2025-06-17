@@ -21,9 +21,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware to handle raw PCM audio data
-app.use(express.raw({ type: 'audio/L16', limit: '10mb' }));
-
 // AWS credentials and region from environment variables
 const transcribeClient = new TranscribeStreamingClient({
   region: process.env.AWS_REGION,
@@ -39,8 +36,8 @@ let videoClients = [];
 // Store WebSocket clients
 let wsClients = [];
 
-// Streaming endpoint for ESP32-S3-EYE
-app.post('/stream-audio', async (req, res) => {
+// Use express.raw only for /stream-audio
+app.post('/stream-audio', express.raw({ type: 'audio/L16', limit: '10mb' }), async (req, res) => {
   try {
     console.log('Received audio stream request');
     // PCM audio buffer from ESP32-S3-EYE
@@ -84,7 +81,7 @@ app.post('/stream-audio', async (req, res) => {
   }
 });
 
-// Endpoint for ESP32-S3-EYE to POST MJPEG stream
+// Endpoint for ESP32-S3-EYE to POST MJPEG stream (no body parser)
 app.post('/video-stream', (req, res) => {
   console.log('Received video stream request');
   let data = [];
