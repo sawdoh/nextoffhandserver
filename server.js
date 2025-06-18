@@ -56,8 +56,10 @@ app.post('/stream-audio', (req, res) => {
       })(),
     });
 
-    // Pipe transcription results back to client
+    // Set up streaming response
     res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Connection', 'keep-alive');
     console.log('Sending audio to AWS Transcribe...');
     
     // Handle the streaming response
