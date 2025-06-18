@@ -55,6 +55,22 @@ const transcribeClient = new TranscribeStreamingClient({
   },
 });
 
+// Validate AWS credentials
+if (!process.env.AWS_REGION || !process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+  log.error('Missing AWS credentials', {
+    hasRegion: !!process.env.AWS_REGION,
+    hasAccessKey: !!process.env.AWS_ACCESS_KEY_ID,
+    hasSecretKey: !!process.env.AWS_SECRET_ACCESS_KEY,
+    hasSessionToken: !!process.env.AWS_SESSION_TOKEN
+  });
+  process.exit(1);
+}
+
+log.info('AWS Transcribe client initialized', {
+  region: process.env.AWS_REGION,
+  hasCredentials: true
+});
+
 // Store connected video clients
 let videoClients = [];
 
