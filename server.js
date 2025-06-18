@@ -9,6 +9,24 @@ const http = require('http');
 const fs = require('fs');
 const WebSocket = require('ws');
 
+// Add logging utility
+const log = {
+  info: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] INFO: ${message}`, Object.keys(data).length ? data : '');
+  },
+  error: (message, error = {}) => {
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ERROR: ${message}`, error);
+  },
+  debug: (message, data = {}) => {
+    if (process.env.NODE_ENV === 'development') {
+      const timestamp = new Date().toISOString();
+      console.log(`[${timestamp}] DEBUG: ${message}`, Object.keys(data).length ? data : '');
+    }
+  }
+};
+
 // Add rate limiting and connection tracking
 const activeTranscribeStreams = new Set();
 const MAX_CONCURRENT_STREAMS = 20; // Leave some buffer below AWS limit of 25
@@ -77,24 +95,6 @@ let videoClients = [];
 // Store WebSocket clients
 let wsClients = [];
 
-// Add logging utility
-const log = {
-  info: (message, data = {}) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] INFO: ${message}`, Object.keys(data).length ? data : '');
-  },
-  error: (message, error = {}) => {
-    const timestamp = new Date().toISOString();
-    console.error(`[${timestamp}] ERROR: ${message}`, error);
-  },
-  debug: (message, data = {}) => {
-    if (process.env.NODE_ENV === 'development') {
-      const timestamp = new Date().toISOString();
-      console.log(`[${timestamp}] DEBUG: ${message}`, Object.keys(data).length ? data : '');
-    }
-  }
-};
-
 // Remove express.raw middleware from /stream-audio
 app.post('/stream-audio', rateLimiter, (req, res) => {
   console.log('Received audio stream request');
@@ -104,23 +104,23 @@ app.post('/stream-audio', rateLimiter, (req, res) => {
   }
   
   try {
-    // Set up AWS Transcribe Streaming
+      // Set up AWS Transcribe Streaming
     console.log('Setting up AWS Transcribe streaming...');
-    const command = new StartStreamTranscriptionCommand({
-      LanguageCode: 'en-US',
-      MediaEncoding: 'pcm',
-      MediaSampleRateHertz: 16000,
-      AudioStream: (async function* () {
+      const command = new StartStreamTranscriptionCommand({
+        LanguageCode: 'en-US',
+        MediaEncoding: 'pcm',
+        MediaSampleRateHertz: 16000,
+        AudioStream: (async function* () {
         // Keep the stream open and process chunks as they arrive
         for await (const chunk of req) {
           console.log('Received audio chunk, size:', chunk.length);
           yield { AudioEvent: { AudioChunk: chunk } };
         }
-      })(),
-    });
+        })(),
+      });
 
     // Set up streaming response
-    res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Type', 'application/json');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('Connection', 'keep-alive');
     console.log('Sending audio to AWS Transcribe...');
@@ -135,24 +135,24 @@ app.post('/stream-audio', rateLimiter, (req, res) => {
         
         for await (const event of stream.TranscriptResultStream) {
           console.log('Raw transcript event:', JSON.stringify(event, null, 2));
-          if (event.TranscriptEvent) {
-            const results = event.TranscriptEvent.Transcript.Results;
+        if (event.TranscriptEvent) {
+          const results = event.TranscriptEvent.Transcript.Results;
             console.log('Transcript results:', JSON.stringify(results, null, 2));
-            if (results && results.length > 0) {
-              const transcript = results[0].Alternatives[0]?.Transcript;
-              if (transcript) {
+          if (results && results.length > 0) {
+            const transcript = results[0].Alternatives[0]?.Transcript;
+            if (transcript) {
                 console.log('Received transcript:', transcript);
-                res.write(JSON.stringify({ transcript }) + '\n');
-                wsClients.forEach(client => {
-                  if (client.readyState === WebSocket.OPEN) {
+              res.write(JSON.stringify({ transcript }) + '\n');
+              wsClients.forEach(client => {
+                if (client.readyState === WebSocket.OPEN) {
                     console.log('Sending transcript to WebSocket client:', transcript);
-                    client.send(JSON.stringify({ type: 'transcript', transcript }));
-                  }
-                });
-              }
+                  client.send(JSON.stringify({ type: 'transcript', transcript }));
+                }
+              });
             }
           }
         }
+      }
       } catch (error) {
         console.error('Error in transcription stream:', error);
         res.status(500).json({ error: 'Transcription failed' });
@@ -484,23 +484,23 @@ wss.on('connection', (ws, req) => {
   } else if (req.url === '/') {
     // Handle video/transcription connection
     log.info('Video/transcription WebSocket connection established');
-    wsClients.push(ws);
-    
-    ws.on('message', (message) => {
-      console.log('Received WebSocket message:', message.toString());
-    });
+  wsClients.push(ws);
+  
+  ws.on('message', (message) => {
+    console.log('Received WebSocket message:', message.toString());
+  });
 
-    ws.on('error', (error) => {
-      console.error('WebSocket error:', error);
-    });
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+  });
 
-    ws.on('close', () => {
-      console.log('Client disconnected');
-      wsClients = wsClients.filter(client => client !== ws);
-    });
+  ws.on('close', () => {
+    console.log('Client disconnected');
+    wsClients = wsClients.filter(client => client !== ws);
+  });
 
-    // Send a test message to verify connection
-    ws.send(JSON.stringify({ type: 'connection', status: 'connected' }));
+  // Send a test message to verify connection
+  ws.send(JSON.stringify({ type: 'connection', status: 'connected' }));
   } else {
     ws.close();
   }
