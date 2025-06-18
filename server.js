@@ -61,6 +61,24 @@ let videoClients = [];
 // Store WebSocket clients
 let wsClients = [];
 
+// Add logging utility
+const log = {
+  info: (message, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] INFO: ${message}`, Object.keys(data).length ? data : '');
+  },
+  error: (message, error = {}) => {
+    const timestamp = new Date().toISOString();
+    console.error(`[${timestamp}] ERROR: ${message}`, error);
+  },
+  debug: (message, data = {}) => {
+    if (process.env.NODE_ENV === 'development') {
+      const timestamp = new Date().toISOString();
+      console.log(`[${timestamp}] DEBUG: ${message}`, Object.keys(data).length ? data : '');
+    }
+  }
+};
+
 // Remove express.raw middleware from /stream-audio
 app.post('/stream-audio', rateLimiter, (req, res) => {
   console.log('Received audio stream request');
@@ -209,13 +227,19 @@ const wss = new WebSocket.Server({
 });
 
 wss.on('connection', (ws, req) => {
-  console.log('New WebSocket connection from:', req.socket.remoteAddress);
+  log.info('New WebSocket connection', { 
+    remoteAddress: req.socket.remoteAddress,
+    url: req.url 
+  });
   
   if (req.url === '/audio-stream') {
-    // Handle audio stream connection
-    console.log('Audio stream WebSocket connection established');
+    log.info('Audio stream WebSocket connection established');
     
     if (activeTranscribeStreams.size >= MAX_CONCURRENT_STREAMS) {
+      log.error('Maximum concurrent streams reached', { 
+        current: activeTranscribeStreams.size,
+        max: MAX_CONCURRENT_STREAMS 
+      });
       ws.send(JSON.stringify({ type: 'error', error: 'Maximum concurrent streams reached' }));
       ws.close();
       return;
@@ -226,7 +250,8 @@ wss.on('connection', (ws, req) => {
     ws.on('message', async (data) => {
       try {
         if (!transcribeStream) {
-          // Set up AWS Transcribe Streaming
+          log.info('Starting new transcription stream');
+          
           const command = new StartStreamTranscriptionCommand({
             LanguageCode: 'en-US',
             MediaEncoding: 'pcm',
@@ -236,16 +261,17 @@ wss.on('connection', (ws, req) => {
                 if (data) {
                   yield { AudioEvent: { AudioChunk: data } };
                 }
-                await new Promise(resolve => setTimeout(resolve, 100)); // Small delay to prevent CPU overload
+                await new Promise(resolve => setTimeout(resolve, 100));
               }
             })(),
           });
 
           transcribeStream = await transcribeClient.send(command);
           activeTranscribeStreams.add(transcribeStream);
-          console.log('Started new transcription stream');
+          log.info('Transcription stream started', { 
+            activeStreams: activeTranscribeStreams.size 
+          });
           
-          // Start processing transcription results
           (async () => {
             try {
               for await (const event of transcribeStream.TranscriptResultStream) {
@@ -254,26 +280,26 @@ wss.on('connection', (ws, req) => {
                   if (results && results.length > 0) {
                     const transcript = results[0].Alternatives[0]?.Transcript;
                     if (transcript) {
-                      console.log('Received transcript:', transcript);
+                      log.info('Received transcript', { transcript });
                       ws.send(JSON.stringify({ type: 'transcript', transcript }));
                     }
                   }
                 }
               }
             } catch (error) {
-              console.error('Error processing transcription stream:', error);
+              log.error('Error processing transcription stream', error);
               ws.send(JSON.stringify({ type: 'error', error: 'Transcription processing failed' }));
             }
           })();
         }
       } catch (error) {
-        console.error('Error in transcription stream:', error);
+        log.error('Error in transcription stream', error);
         ws.send(JSON.stringify({ type: 'error', error: 'Transcription failed' }));
       }
     });
 
     ws.on('error', (error) => {
-      console.error('Audio WebSocket error:', error);
+      log.error('Audio WebSocket error', error);
       if (transcribeStream) {
         activeTranscribeStreams.delete(transcribeStream);
         transcribeStream = null;
@@ -281,7 +307,9 @@ wss.on('connection', (ws, req) => {
     });
 
     ws.on('close', () => {
-      console.log('Audio WebSocket connection closed');
+      log.info('Audio WebSocket connection closed', {
+        activeStreams: activeTranscribeStreams.size
+      });
       if (transcribeStream) {
         activeTranscribeStreams.delete(transcribeStream);
         transcribeStream = null;
@@ -289,7 +317,7 @@ wss.on('connection', (ws, req) => {
     });
   } else if (req.url === '/') {
     // Handle video/transcription connection
-    console.log('Video/transcription WebSocket connection established');
+    log.info('Video/transcription WebSocket connection established');
     wsClients.push(ws);
     
     ws.on('message', (message) => {
