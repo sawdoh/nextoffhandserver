@@ -247,9 +247,25 @@ wss.on('connection', (ws, req) => {
 
     let transcribeStream = null;
     let audioStreamGenerator = null;
+    let audioChunksReceived = 0;
+    let lastLogTime = Date.now();
     
     ws.on('message', async (data) => {
       try {
+        audioChunksReceived++;
+        const now = Date.now();
+        
+        // Log audio chunk stats every second
+        if (now - lastLogTime >= 1000) {
+          log.info('Audio streaming stats', {
+            chunksReceived: audioChunksReceived,
+            chunkSize: data.length,
+            activeStreams: activeTranscribeStreams.size
+          });
+          audioChunksReceived = 0;
+          lastLogTime = now;
+        }
+
         if (!transcribeStream) {
           log.info('Starting new transcription stream');
           
@@ -257,9 +273,12 @@ wss.on('connection', (ws, req) => {
           audioStreamGenerator = (async function* () {
             while (true) {
               if (data) {
+                log.debug('Sending audio chunk to AWS Transcribe', {
+                  chunkSize: data.length
+                });
                 yield { AudioEvent: { AudioChunk: data } };
               }
-              await new Promise(resolve => setTimeout(resolve, 10)); // Small delay to prevent CPU overload
+              await new Promise(resolve => setTimeout(resolve, 10));
             }
           })();
 
@@ -275,7 +294,7 @@ wss.on('connection', (ws, req) => {
             EnableChannelIdentification: false
           });
 
-          // Start transcription stream
+          log.info('Initiating AWS Transcribe stream');
           transcribeStream = await transcribeClient.send(command);
           activeTranscribeStreams.add(transcribeStream);
           log.info('Transcription stream started', { 
@@ -285,20 +304,32 @@ wss.on('connection', (ws, req) => {
           // Process transcription results
           (async () => {
             try {
+              log.info('Starting transcription result processing');
               for await (const event of transcribeStream.TranscriptResultStream) {
+                log.debug('Received event from AWS Transcribe', {
+                  eventType: Object.keys(event)[0]
+                });
+                
                 if (event.TranscriptEvent) {
                   const results = event.TranscriptEvent.Transcript.Results;
                   if (results && results.length > 0) {
                     const transcript = results[0].Alternatives[0]?.Transcript;
                     if (transcript) {
-                      log.info('Received transcript', { transcript });
+                      log.info('Received transcript', { 
+                        transcript,
+                        isPartial: results[0].IsPartial
+                      });
                       ws.send(JSON.stringify({ type: 'transcript', transcript }));
                     }
                   }
                 }
               }
             } catch (error) {
-              log.error('Error processing transcription stream', error);
+              log.error('Error processing transcription stream', {
+                error: error.message,
+                code: error.code,
+                stack: error.stack
+              });
               ws.send(JSON.stringify({ type: 'error', error: 'Transcription processing failed' }));
             }
           })();
@@ -307,13 +338,21 @@ wss.on('connection', (ws, req) => {
           data = data;
         }
       } catch (error) {
-        log.error('Error in transcription stream', error);
+        log.error('Error in transcription stream', {
+          error: error.message,
+          code: error.code,
+          stack: error.stack
+        });
         ws.send(JSON.stringify({ type: 'error', error: 'Transcription failed' }));
       }
     });
 
     ws.on('error', (error) => {
-      log.error('Audio WebSocket error', error);
+      log.error('Audio WebSocket error', {
+        error: error.message,
+        code: error.code,
+        stack: error.stack
+      });
       if (transcribeStream) {
         activeTranscribeStreams.delete(transcribeStream);
         transcribeStream = null;
@@ -322,7 +361,8 @@ wss.on('connection', (ws, req) => {
 
     ws.on('close', () => {
       log.info('Audio WebSocket connection closed', {
-        activeStreams: activeTranscribeStreams.size
+        activeStreams: activeTranscribeStreams.size,
+        totalChunksReceived: audioChunksReceived
       });
       if (transcribeStream) {
         activeTranscribeStreams.delete(transcribeStream);
