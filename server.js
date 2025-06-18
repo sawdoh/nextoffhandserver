@@ -262,212 +262,76 @@ wss.on('connection', (ws, req) => {
     }
 
     let transcribeStream = null;
-    let audioStreamGenerator = null;
+    let audioChunks = [];
+    let isTranscribeActive = false;
     let audioChunksReceived = 0;
     let lastLogTime = Date.now();
-    let isInitialized = false;
-    
-    ws.on('message', async (data) => {
-      try {
-        audioChunksReceived++;
-        const now = Date.now();
-        
-        // Log audio chunk stats every second
-        if (now - lastLogTime >= 1000) {
-          log.info('Audio streaming stats', {
-            chunksReceived: audioChunksReceived,
-            chunkSize: data.length,
-            activeStreams: activeTranscribeStreams.size
-          });
-          audioChunksReceived = 0;
-          lastLogTime = now;
-        }
 
-        if (!isInitialized) {
-          log.info('Starting new transcription stream');
-          isInitialized = true;
-          
-          // Create audio stream generator
-          audioStreamGenerator = (async function* () {
-            let audioBuffer = Buffer.alloc(0);
-            let firstChunk = true;
-            
-            while (true) {
-              if (data) {
-                // Validate audio chunk
-                if (firstChunk) {
-                  log.info('First audio chunk received', {
-                    chunkSize: data.length,
-                    isBuffer: Buffer.isBuffer(data),
-                    sampleRate: 16000,
-                    encoding: 'pcm'
-                  });
-                  firstChunk = false;
-                }
-
-                // Ensure data is in the correct format
-                const audioChunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
-                
-                // Append to buffer
-                audioBuffer = Buffer.concat([audioBuffer, audioChunk]);
-                
-                // If we have enough data, send it
-                if (audioBuffer.length >= 1024) { // Send in 1KB chunks
-                  log.debug('Sending audio data to AWS Transcribe', {
-                    bufferSize: audioBuffer.length,
-                    timestamp: new Date().toISOString()
-                  });
-
-                  yield { AudioEvent: { AudioChunk: audioBuffer } };
-                  audioBuffer = Buffer.alloc(0); // Clear buffer after sending
-                }
-              }
-              await new Promise(resolve => setTimeout(resolve, 10));
-            }
-          })();
-
-          // Create AWS Transcribe command
-          const command = new StartStreamTranscriptionCommand({
-            LanguageCode: 'en-US',
-            MediaEncoding: 'pcm',
-            MediaSampleRateHertz: 16000,
-            AudioStream: audioStreamGenerator,
-            EnablePartialResultsStabilization: true,
-            PartialResultsStability: 'high',
-            ShowSpeakerLabels: false,
-            EnableChannelIdentification: false,
-            EnableAudioStreaming: true
-          });
-
-          log.info('Initiating AWS Transcribe stream with config', {
-            languageCode: 'en-US',
-            mediaEncoding: 'pcm',
-            sampleRate: 16000,
-            partialResultsStability: 'high',
-            bufferSize: 1024
-          });
-
-          transcribeStream = await transcribeClient.send(command);
-          activeTranscribeStreams.add(transcribeStream);
-          log.info('Transcription stream started', { 
-            activeStreams: activeTranscribeStreams.size 
-          });
-          
-          // Process transcription results
-          (async () => {
-            try {
-              log.info('Starting transcription result processing');
-              for await (const event of transcribeStream.TranscriptResultStream) {
-                log.debug('Raw AWS Transcribe event', {
-                  eventType: Object.keys(event)[0],
-                  eventData: JSON.stringify(event),
-                  timestamp: new Date().toISOString()
-                });
-                
-                if (event.TranscriptEvent) {
-                  const results = event.TranscriptEvent.Transcript.Results;
-                  log.debug('Processing transcript results', {
-                    resultsCount: results?.length,
-                    isPartial: results?.[0]?.IsPartial,
-                    hasAlternatives: results?.[0]?.Alternatives?.length > 0,
-                    timestamp: new Date().toISOString()
-                  });
-
-                  if (results && results.length > 0) {
-                    const transcript = results[0].Alternatives[0]?.Transcript;
-                    if (transcript) {
-                      log.info('Received transcript', { 
-                        transcript,
-                        isPartial: results[0].IsPartial,
-                        confidence: results[0].Alternatives[0]?.Items?.[0]?.Confidence,
-                        timestamp: new Date().toISOString()
-                      });
-                      ws.send(JSON.stringify({ 
-                        type: 'transcript', 
-                        transcript,
-                        isPartial: results[0].IsPartial
-                      }));
-                    } else {
-                      log.debug('No transcript in results', {
-                        results: JSON.stringify(results),
-                        timestamp: new Date().toISOString()
-                      });
-                    }
-                  }
-                } else if (event.BadRequestException) {
-                  log.error('AWS Transcribe bad request', {
-                    error: event.BadRequestException,
-                    timestamp: new Date().toISOString()
-                  });
-                } else if (event.InternalFailureException) {
-                  log.error('AWS Transcribe internal failure', {
-                    error: event.InternalFailureException,
-                    timestamp: new Date().toISOString()
-                  });
-                } else if (event.LimitExceededException) {
-                  log.error('AWS Transcribe limit exceeded', {
-                    error: event.LimitExceededException,
-                    timestamp: new Date().toISOString()
-                  });
-                } else if (event.ServiceUnavailableException) {
-                  log.error('AWS Transcribe service unavailable', {
-                    error: event.ServiceUnavailableException,
-                    timestamp: new Date().toISOString()
-                  });
-                } else if (event.ConflictException) {
-                  log.error('AWS Transcribe conflict', {
-                    error: event.ConflictException,
-                    timestamp: new Date().toISOString()
-                  });
-                }
-              }
-            } catch (error) {
-              log.error('Error processing transcription stream', {
-                error: error.message,
-                code: error.code,
-                stack: error.stack,
-                name: error.name,
-                timestamp: new Date().toISOString()
-              });
-              ws.send(JSON.stringify({ 
-                type: 'error', 
-                error: 'Transcription processing failed',
-                details: error.message
-              }));
-            }
-          })();
-        } else {
-          // Update the audio data for the generator
-          data = data;
-        }
-      } catch (error) {
-        log.error('Error in transcription stream', {
-          error: error.message,
-          code: error.code,
-          stack: error.stack,
-          name: error.name,
-          timestamp: new Date().toISOString()
+    // Buffer incoming audio data
+    ws.on('message', (data) => {
+      audioChunks.push(data);
+      audioChunksReceived++;
+      const now = Date.now();
+      if (now - lastLogTime >= 1000) {
+        log.info('Audio streaming stats', {
+          chunksReceived: audioChunksReceived,
+          chunkSize: data.length,
+          activeStreams: activeTranscribeStreams.size
         });
-        ws.send(JSON.stringify({ 
-          type: 'error', 
-          error: 'Transcription failed',
-          details: error.message
-        }));
+        audioChunksReceived = 0;
+        lastLogTime = now;
       }
     });
 
-    ws.on('error', (error) => {
-      log.error('Audio WebSocket error', {
-        error: error.message,
-        code: error.code,
-        stack: error.stack,
-        name: error.name
-      });
-      if (transcribeStream) {
-        activeTranscribeStreams.delete(transcribeStream);
-        transcribeStream = null;
+    // Start transcription when first audio chunk arrives
+    ws.once('message', async () => {
+      if (isTranscribeActive) return;
+      isTranscribeActive = true;
+      log.info('Starting new transcription stream');
+
+      // Async generator for audio stream
+      async function* getAudioStream() {
+        while (ws.readyState === WebSocket.OPEN || audioChunks.length > 0) {
+          if (audioChunks.length > 0) {
+            const chunk = audioChunks.shift();
+            yield { AudioEvent: { AudioChunk: Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk) } };
+          } else {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        }
       }
-      isInitialized = false;
+
+      const command = new StartStreamTranscriptionCommand({
+        LanguageCode: 'en-US',
+        MediaEncoding: 'pcm',
+        MediaSampleRateHertz: 16000,
+        AudioStream: getAudioStream(),
+      });
+
+      try {
+        transcribeStream = await transcribeClient.send(command);
+        activeTranscribeStreams.add(transcribeStream);
+        log.info('Transcription stream started', { activeStreams: activeTranscribeStreams.size });
+
+        for await (const event of transcribeStream.TranscriptResultStream) {
+          if (event.TranscriptEvent) {
+            const results = event.TranscriptEvent.Transcript.Results;
+            if (results && results.length > 0) {
+              const transcript = results[0].Alternatives[0]?.Transcript;
+              if (transcript) {
+                log.info('Received transcript', { transcript });
+                ws.send(JSON.stringify({ type: 'transcript', transcript, isPartial: results[0].IsPartial }));
+              }
+            }
+          }
+        }
+      } catch (error) {
+        log.error('Transcribe error', error);
+        ws.send(JSON.stringify({ type: 'error', error: error.message }));
+      } finally {
+        if (transcribeStream) activeTranscribeStreams.delete(transcribeStream);
+        log.info('Transcription stream ended');
+      }
     });
 
     ws.on('close', () => {
@@ -475,11 +339,14 @@ wss.on('connection', (ws, req) => {
         activeStreams: activeTranscribeStreams.size,
         totalChunksReceived: audioChunksReceived
       });
-      if (transcribeStream) {
-        activeTranscribeStreams.delete(transcribeStream);
-        transcribeStream = null;
-      }
-      isInitialized = false;
+      isTranscribeActive = false;
+      audioChunks = [];
+    });
+
+    ws.on('error', (error) => {
+      log.error('Audio WebSocket error', error);
+      isTranscribeActive = false;
+      audioChunks = [];
     });
   } else if (req.url === '/') {
     // Handle video/transcription connection
