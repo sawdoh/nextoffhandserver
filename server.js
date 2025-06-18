@@ -27,6 +27,7 @@ const transcribeClient = new TranscribeStreamingClient({
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    sessionToken: process.env.AWS_SESSION_TOKEN,
   },
 });
 
@@ -38,23 +39,27 @@ let wsClients = [];
 
 // Remove express.raw middleware from /stream-audio
 app.post('/stream-audio', (req, res) => {
+  console.log('Received audio stream request');
   try {
     let data = [];
     req.on('data', (chunk) => {
+      console.log('Received audio chunk, size:', chunk.length);
       data.push(chunk);
     });
     req.on('end', async () => {
       const buffer = Buffer.concat(data);
-      console.log('Received audio stream request, size:', buffer.length);
+      console.log('Processing complete audio stream, total size:', buffer.length);
       // Forward raw PCM audio to WebSocket clients
       wsClients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
+          console.log('Forwarding audio to WebSocket client');
           client.send(JSON.stringify({ type: 'audio' })); // signal audio chunk
           client.send(buffer); // send raw PCM buffer
         }
       });
       // PCM audio buffer from ESP32-S3-EYE
       // Set up AWS Transcribe Streaming
+      console.log('Setting up AWS Transcribe streaming...');
       const command = new StartStreamTranscriptionCommand({
         LanguageCode: 'en-US',
         MediaEncoding: 'pcm',
@@ -65,13 +70,16 @@ app.post('/stream-audio', (req, res) => {
       });
       // Pipe transcription results back to client
       res.setHeader('Content-Type', 'application/json');
+      console.log('Sending audio to AWS Transcribe...');
       const response = await transcribeClient.send(command);
+      console.log('Got response from AWS Transcribe');
       for await (const event of response.TranscriptResultStream) {
         if (event.TranscriptEvent) {
           const results = event.TranscriptEvent.Transcript.Results;
           if (results && results.length > 0) {
             const transcript = results[0].Alternatives[0]?.Transcript;
             if (transcript) {
+              console.log('Received transcript:', transcript);
               res.write(JSON.stringify({ transcript }) + '\n');
               wsClients.forEach(client => {
                 if (client.readyState === WebSocket.OPEN) {
@@ -82,6 +90,7 @@ app.post('/stream-audio', (req, res) => {
           }
         }
       }
+      console.log('Finished processing audio stream');
       res.end();
     });
   } catch (err) {
