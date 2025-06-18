@@ -41,59 +41,62 @@ let wsClients = [];
 app.post('/stream-audio', (req, res) => {
   console.log('Received audio stream request');
   try {
-    let data = [];
-    req.on('data', (chunk) => {
-      console.log('Received audio chunk, size:', chunk.length);
-      data.push(chunk);
-    });
-    req.on('end', async () => {
-      const buffer = Buffer.concat(data);
-      console.log('Processing complete audio stream, total size:', buffer.length);
-      // Forward raw PCM audio to WebSocket clients
-      wsClients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-          console.log('Forwarding audio to WebSocket client');
-          client.send(JSON.stringify({ type: 'audio' })); // signal audio chunk
-          client.send(buffer); // send raw PCM buffer
+    // Set up AWS Transcribe Streaming
+    console.log('Setting up AWS Transcribe streaming...');
+    const command = new StartStreamTranscriptionCommand({
+      LanguageCode: 'en-US',
+      MediaEncoding: 'pcm',
+      MediaSampleRateHertz: 16000,
+      AudioStream: (async function* () {
+        // Keep the stream open and process chunks as they arrive
+        for await (const chunk of req) {
+          console.log('Received audio chunk, size:', chunk.length);
+          yield { AudioEvent: { AudioChunk: chunk } };
         }
-      });
-      // PCM audio buffer from ESP32-S3-EYE
-      // Set up AWS Transcribe Streaming
-      console.log('Setting up AWS Transcribe streaming...');
-      const command = new StartStreamTranscriptionCommand({
-        LanguageCode: 'en-US',
-        MediaEncoding: 'pcm',
-        MediaSampleRateHertz: 16000,
-        AudioStream: (async function* () {
-          yield { AudioEvent: { AudioChunk: buffer } };
-        })(),
-      });
-      // Pipe transcription results back to client
-      res.setHeader('Content-Type', 'application/json');
-      console.log('Sending audio to AWS Transcribe...');
-      const response = await transcribeClient.send(command);
-      console.log('Got response from AWS Transcribe');
-      for await (const event of response.TranscriptResultStream) {
-        console.log('Raw transcript event:', JSON.stringify(event));
-        if (event.TranscriptEvent) {
-          const results = event.TranscriptEvent.Transcript.Results;
-          if (results && results.length > 0) {
-            const transcript = results[0].Alternatives[0]?.Transcript;
-            if (transcript) {
-              console.log('Received transcript:', transcript);
-              res.write(JSON.stringify({ transcript }) + '\n');
-              wsClients.forEach(client => {
-                if (client.readyState === WebSocket.OPEN) {
-                  client.send(JSON.stringify({ type: 'transcript', transcript }));
-                }
-              });
+      })(),
+    });
+
+    // Pipe transcription results back to client
+    res.setHeader('Content-Type', 'application/json');
+    console.log('Sending audio to AWS Transcribe...');
+    
+    // Handle the streaming response
+    (async () => {
+      try {
+        const response = await transcribeClient.send(command);
+        console.log('Got response from AWS Transcribe');
+        
+        for await (const event of response.TranscriptResultStream) {
+          console.log('Raw transcript event:', JSON.stringify(event, null, 2));
+          if (event.TranscriptEvent) {
+            const results = event.TranscriptEvent.Transcript.Results;
+            console.log('Transcript results:', JSON.stringify(results, null, 2));
+            if (results && results.length > 0) {
+              const transcript = results[0].Alternatives[0]?.Transcript;
+              if (transcript) {
+                console.log('Received transcript:', transcript);
+                res.write(JSON.stringify({ transcript }) + '\n');
+                wsClients.forEach(client => {
+                  if (client.readyState === WebSocket.OPEN) {
+                    console.log('Sending transcript to WebSocket client:', transcript);
+                    client.send(JSON.stringify({ type: 'transcript', transcript }));
+                  }
+                });
+              }
             }
           }
         }
+      } catch (error) {
+        console.error('Error in transcription stream:', error);
+        res.status(500).json({ error: 'Transcription failed' });
       }
-      console.log('Finished processing audio stream');
-      res.end();
+    })();
+
+    // Handle client disconnect
+    req.on('close', () => {
+      console.log('Client disconnected from audio stream');
     });
+
   } catch (err) {
     console.error('Transcribe error:', err);
     res.status(500).send('Transcription failed.');
