@@ -39,7 +39,14 @@ let wsClients = [];
 // Use express.raw only for /stream-audio
 app.post('/stream-audio', express.raw({ type: 'audio/L16', limit: '10mb' }), async (req, res) => {
   try {
-    console.log('Received audio stream request');
+    console.log('Received audio stream request, size:', req.body.length);
+    // Forward raw PCM audio to WebSocket clients
+    wsClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({ type: 'audio' })); // signal audio chunk
+        client.send(req.body); // send raw PCM buffer
+      }
+    });
     // PCM audio buffer from ESP32-S3-EYE
     const audioStream = req;
 
