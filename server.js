@@ -249,6 +249,7 @@ wss.on('connection', (ws, req) => {
     let audioStreamGenerator = null;
     let audioChunksReceived = 0;
     let lastLogTime = Date.now();
+    let isInitialized = false;
     
     ws.on('message', async (data) => {
       try {
@@ -266,8 +267,9 @@ wss.on('connection', (ws, req) => {
           lastLogTime = now;
         }
 
-        if (!transcribeStream) {
+        if (!isInitialized) {
           log.info('Starting new transcription stream');
+          isInitialized = true;
           
           // Create audio stream generator
           audioStreamGenerator = (async function* () {
@@ -289,7 +291,7 @@ wss.on('connection', (ws, req) => {
             MediaSampleRateHertz: 16000,
             AudioStream: audioStreamGenerator,
             EnablePartialResultsStabilization: true,
-            PartialResultsStability: 'HIGH',
+            PartialResultsStability: 'high',
             ShowSpeakerLabels: false,
             EnableChannelIdentification: false
           });
@@ -357,6 +359,7 @@ wss.on('connection', (ws, req) => {
         activeTranscribeStreams.delete(transcribeStream);
         transcribeStream = null;
       }
+      isInitialized = false;
     });
 
     ws.on('close', () => {
@@ -368,6 +371,7 @@ wss.on('connection', (ws, req) => {
         activeTranscribeStreams.delete(transcribeStream);
         transcribeStream = null;
       }
+      isInitialized = false;
     });
   } else if (req.url === '/') {
     // Handle video/transcription connection
