@@ -171,7 +171,7 @@ const httpsServer = https.createServer(options, app);
 // Create WebSocket server on HTTPS
 const wss = new WebSocket.Server({ 
   server: httpsServer,
-  path: '/',
+  path: '/audio-stream',
   clientTracking: true,
   perMessageDeflate: false,
 });
@@ -180,57 +180,74 @@ wss.on('connection', (ws, req) => {
   console.log('New WebSocket connection from:', req.socket.remoteAddress);
   
   // Handle audio stream connection
-  if (req.url === '/audio-stream') {
-    console.log('Audio stream WebSocket connection established');
-    
-    ws.on('message', async (data) => {
-      try {
-        // Set up AWS Transcribe Streaming
-        const command = new StartStreamTranscriptionCommand({
-          LanguageCode: 'en-US',
-          MediaEncoding: 'pcm',
-          MediaSampleRateHertz: 16000,
-          AudioStream: (async function* () {
-            yield { AudioEvent: { AudioChunk: data } };
-          })(),
-        });
+  console.log('Audio stream WebSocket connection established');
+  
+  ws.on('message', async (data) => {
+    try {
+      // Set up AWS Transcribe Streaming
+      const command = new StartStreamTranscriptionCommand({
+        LanguageCode: 'en-US',
+        MediaEncoding: 'pcm',
+        MediaSampleRateHertz: 16000,
+        AudioStream: (async function* () {
+          yield { AudioEvent: { AudioChunk: data } };
+        })(),
+      });
 
-        const response = await transcribeClient.send(command);
-        console.log('Got response from AWS Transcribe');
-        
-        for await (const event of response.TranscriptResultStream) {
-          if (event.TranscriptEvent) {
-            const results = event.TranscriptEvent.Transcript.Results;
-            if (results && results.length > 0) {
-              const transcript = results[0].Alternatives[0]?.Transcript;
-              if (transcript) {
-                console.log('Received transcript:', transcript);
-                ws.send(JSON.stringify({ type: 'transcript', transcript }));
-              }
+      const response = await transcribeClient.send(command);
+      console.log('Got response from AWS Transcribe');
+      
+      for await (const event of response.TranscriptResultStream) {
+        console.log('Raw transcript event:', JSON.stringify(event, null, 2));
+        if (event.TranscriptEvent) {
+          const results = event.TranscriptEvent.Transcript.Results;
+          console.log('Transcript results:', JSON.stringify(results, null, 2));
+          if (results && results.length > 0) {
+            const transcript = results[0].Alternatives[0]?.Transcript;
+            if (transcript) {
+              console.log('Received transcript:', transcript);
+              ws.send(JSON.stringify({ type: 'transcript', transcript }));
             }
           }
         }
-      } catch (error) {
-        console.error('Error in transcription stream:', error);
-        ws.send(JSON.stringify({ type: 'error', error: 'Transcription failed' }));
       }
-    });
-  } else {
-    // Handle other WebSocket connections (video, etc.)
-    console.log('General WebSocket connection established');
-    wsClients.push(ws);
-    
-    ws.on('message', (message) => {
-      console.log('Received WebSocket message:', message.toString());
-    });
-  }
+    } catch (error) {
+      console.error('Error in transcription stream:', error);
+      ws.send(JSON.stringify({ type: 'error', error: 'Transcription failed' }));
+    }
+  });
+
+  ws.on('error', (error) => {
+    console.error('Audio WebSocket error:', error);
+  });
+
+  ws.on('close', () => {
+    console.log('Audio WebSocket connection closed');
+  });
+});
+
+// Create separate WebSocket server for video
+const videoWss = new WebSocket.Server({ 
+  server: httpsServer,
+  path: '/',
+  clientTracking: true,
+  perMessageDeflate: false,
+});
+
+videoWss.on('connection', (ws, req) => {
+  console.log('New video WebSocket connection from:', req.socket.remoteAddress);
+  wsClients.push(ws);
+  
+  ws.on('message', (message) => {
+    console.log('Received WebSocket message:', message.toString());
+  });
 
   ws.on('error', (error) => {
     console.error('WebSocket error:', error);
   });
 
   ws.on('close', () => {
-    console.log('WebSocket connection closed');
+    console.log('Client disconnected');
     wsClients = wsClients.filter(client => client !== ws);
   });
 
