@@ -74,6 +74,7 @@ app.post('/stream-audio', (req, res) => {
       const response = await transcribeClient.send(command);
       console.log('Got response from AWS Transcribe');
       for await (const event of response.TranscriptResultStream) {
+        console.log('Raw transcript event:', JSON.stringify(event));
         if (event.TranscriptEvent) {
           const results = event.TranscriptEvent.Transcript.Results;
           if (results && results.length > 0) {
