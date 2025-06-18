@@ -246,32 +246,43 @@ wss.on('connection', (ws, req) => {
     }
 
     let transcribeStream = null;
+    let audioStreamGenerator = null;
     
     ws.on('message', async (data) => {
       try {
         if (!transcribeStream) {
           log.info('Starting new transcription stream');
           
+          // Create audio stream generator
+          audioStreamGenerator = (async function* () {
+            while (true) {
+              if (data) {
+                yield { AudioEvent: { AudioChunk: data } };
+              }
+              await new Promise(resolve => setTimeout(resolve, 10)); // Small delay to prevent CPU overload
+            }
+          })();
+
+          // Create AWS Transcribe command
           const command = new StartStreamTranscriptionCommand({
             LanguageCode: 'en-US',
             MediaEncoding: 'pcm',
             MediaSampleRateHertz: 16000,
-            AudioStream: (async function* () {
-              while (true) {
-                if (data) {
-                  yield { AudioEvent: { AudioChunk: data } };
-                }
-                await new Promise(resolve => setTimeout(resolve, 100));
-              }
-            })(),
+            AudioStream: audioStreamGenerator,
+            EnablePartialResultsStabilization: true,
+            PartialResultsStability: 'HIGH',
+            ShowSpeakerLabels: false,
+            EnableChannelIdentification: false
           });
 
+          // Start transcription stream
           transcribeStream = await transcribeClient.send(command);
           activeTranscribeStreams.add(transcribeStream);
           log.info('Transcription stream started', { 
             activeStreams: activeTranscribeStreams.size 
           });
           
+          // Process transcription results
           (async () => {
             try {
               for await (const event of transcribeStream.TranscriptResultStream) {
@@ -291,6 +302,9 @@ wss.on('connection', (ws, req) => {
               ws.send(JSON.stringify({ type: 'error', error: 'Transcription processing failed' }));
             }
           })();
+        } else {
+          // Update the audio data for the generator
+          data = data;
         }
       } catch (error) {
         log.error('Error in transcription stream', error);
