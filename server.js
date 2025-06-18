@@ -273,12 +273,38 @@ wss.on('connection', (ws, req) => {
           
           // Create audio stream generator
           audioStreamGenerator = (async function* () {
+            let audioBuffer = Buffer.alloc(0);
+            let firstChunk = true;
+            
             while (true) {
               if (data) {
-                log.debug('Sending audio chunk to AWS Transcribe', {
-                  chunkSize: data.length
-                });
-                yield { AudioEvent: { AudioChunk: data } };
+                // Validate audio chunk
+                if (firstChunk) {
+                  log.info('First audio chunk received', {
+                    chunkSize: data.length,
+                    isBuffer: Buffer.isBuffer(data),
+                    sampleRate: 16000,
+                    encoding: 'pcm'
+                  });
+                  firstChunk = false;
+                }
+
+                // Ensure data is in the correct format
+                const audioChunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+                
+                // Append to buffer
+                audioBuffer = Buffer.concat([audioBuffer, audioChunk]);
+                
+                // If we have enough data, send it
+                if (audioBuffer.length >= 1024) { // Send in 1KB chunks
+                  log.debug('Sending audio data to AWS Transcribe', {
+                    bufferSize: audioBuffer.length,
+                    timestamp: new Date().toISOString()
+                  });
+
+                  yield { AudioEvent: { AudioChunk: audioBuffer } };
+                  audioBuffer = Buffer.alloc(0); // Clear buffer after sending
+                }
               }
               await new Promise(resolve => setTimeout(resolve, 10));
             }
@@ -293,10 +319,18 @@ wss.on('connection', (ws, req) => {
             EnablePartialResultsStabilization: true,
             PartialResultsStability: 'high',
             ShowSpeakerLabels: false,
-            EnableChannelIdentification: false
+            EnableChannelIdentification: false,
+            EnableAudioStreaming: true
           });
 
-          log.info('Initiating AWS Transcribe stream');
+          log.info('Initiating AWS Transcribe stream with config', {
+            languageCode: 'en-US',
+            mediaEncoding: 'pcm',
+            sampleRate: 16000,
+            partialResultsStability: 'high',
+            bufferSize: 1024
+          });
+
           transcribeStream = await transcribeClient.send(command);
           activeTranscribeStreams.add(transcribeStream);
           log.info('Transcription stream started', { 
@@ -310,7 +344,8 @@ wss.on('connection', (ws, req) => {
               for await (const event of transcribeStream.TranscriptResultStream) {
                 log.debug('Raw AWS Transcribe event', {
                   eventType: Object.keys(event)[0],
-                  eventData: JSON.stringify(event)
+                  eventData: JSON.stringify(event),
+                  timestamp: new Date().toISOString()
                 });
                 
                 if (event.TranscriptEvent) {
@@ -318,7 +353,8 @@ wss.on('connection', (ws, req) => {
                   log.debug('Processing transcript results', {
                     resultsCount: results?.length,
                     isPartial: results?.[0]?.IsPartial,
-                    hasAlternatives: results?.[0]?.Alternatives?.length > 0
+                    hasAlternatives: results?.[0]?.Alternatives?.length > 0,
+                    timestamp: new Date().toISOString()
                   });
 
                   if (results && results.length > 0) {
@@ -327,7 +363,8 @@ wss.on('connection', (ws, req) => {
                       log.info('Received transcript', { 
                         transcript,
                         isPartial: results[0].IsPartial,
-                        confidence: results[0].Alternatives[0]?.Items?.[0]?.Confidence
+                        confidence: results[0].Alternatives[0]?.Items?.[0]?.Confidence,
+                        timestamp: new Date().toISOString()
                       });
                       ws.send(JSON.stringify({ 
                         type: 'transcript', 
@@ -336,29 +373,35 @@ wss.on('connection', (ws, req) => {
                       }));
                     } else {
                       log.debug('No transcript in results', {
-                        results: JSON.stringify(results)
+                        results: JSON.stringify(results),
+                        timestamp: new Date().toISOString()
                       });
                     }
                   }
                 } else if (event.BadRequestException) {
                   log.error('AWS Transcribe bad request', {
-                    error: event.BadRequestException
+                    error: event.BadRequestException,
+                    timestamp: new Date().toISOString()
                   });
                 } else if (event.InternalFailureException) {
                   log.error('AWS Transcribe internal failure', {
-                    error: event.InternalFailureException
+                    error: event.InternalFailureException,
+                    timestamp: new Date().toISOString()
                   });
                 } else if (event.LimitExceededException) {
                   log.error('AWS Transcribe limit exceeded', {
-                    error: event.LimitExceededException
+                    error: event.LimitExceededException,
+                    timestamp: new Date().toISOString()
                   });
                 } else if (event.ServiceUnavailableException) {
                   log.error('AWS Transcribe service unavailable', {
-                    error: event.ServiceUnavailableException
+                    error: event.ServiceUnavailableException,
+                    timestamp: new Date().toISOString()
                   });
                 } else if (event.ConflictException) {
                   log.error('AWS Transcribe conflict', {
-                    error: event.ConflictException
+                    error: event.ConflictException,
+                    timestamp: new Date().toISOString()
                   });
                 }
               }
@@ -367,7 +410,8 @@ wss.on('connection', (ws, req) => {
                 error: error.message,
                 code: error.code,
                 stack: error.stack,
-                name: error.name
+                name: error.name,
+                timestamp: new Date().toISOString()
               });
               ws.send(JSON.stringify({ 
                 type: 'error', 
@@ -385,7 +429,8 @@ wss.on('connection', (ws, req) => {
           error: error.message,
           code: error.code,
           stack: error.stack,
-          name: error.name
+          name: error.name,
+          timestamp: new Date().toISOString()
         });
         ws.send(JSON.stringify({ 
           type: 'error', 
