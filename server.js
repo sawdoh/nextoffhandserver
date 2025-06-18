@@ -308,31 +308,72 @@ wss.on('connection', (ws, req) => {
             try {
               log.info('Starting transcription result processing');
               for await (const event of transcribeStream.TranscriptResultStream) {
-                log.debug('Received event from AWS Transcribe', {
-                  eventType: Object.keys(event)[0]
+                log.debug('Raw AWS Transcribe event', {
+                  eventType: Object.keys(event)[0],
+                  eventData: JSON.stringify(event)
                 });
                 
                 if (event.TranscriptEvent) {
                   const results = event.TranscriptEvent.Transcript.Results;
+                  log.debug('Processing transcript results', {
+                    resultsCount: results?.length,
+                    isPartial: results?.[0]?.IsPartial,
+                    hasAlternatives: results?.[0]?.Alternatives?.length > 0
+                  });
+
                   if (results && results.length > 0) {
                     const transcript = results[0].Alternatives[0]?.Transcript;
                     if (transcript) {
                       log.info('Received transcript', { 
                         transcript,
-                        isPartial: results[0].IsPartial
+                        isPartial: results[0].IsPartial,
+                        confidence: results[0].Alternatives[0]?.Items?.[0]?.Confidence
                       });
-                      ws.send(JSON.stringify({ type: 'transcript', transcript }));
+                      ws.send(JSON.stringify({ 
+                        type: 'transcript', 
+                        transcript,
+                        isPartial: results[0].IsPartial
+                      }));
+                    } else {
+                      log.debug('No transcript in results', {
+                        results: JSON.stringify(results)
+                      });
                     }
                   }
+                } else if (event.BadRequestException) {
+                  log.error('AWS Transcribe bad request', {
+                    error: event.BadRequestException
+                  });
+                } else if (event.InternalFailureException) {
+                  log.error('AWS Transcribe internal failure', {
+                    error: event.InternalFailureException
+                  });
+                } else if (event.LimitExceededException) {
+                  log.error('AWS Transcribe limit exceeded', {
+                    error: event.LimitExceededException
+                  });
+                } else if (event.ServiceUnavailableException) {
+                  log.error('AWS Transcribe service unavailable', {
+                    error: event.ServiceUnavailableException
+                  });
+                } else if (event.ConflictException) {
+                  log.error('AWS Transcribe conflict', {
+                    error: event.ConflictException
+                  });
                 }
               }
             } catch (error) {
               log.error('Error processing transcription stream', {
                 error: error.message,
                 code: error.code,
-                stack: error.stack
+                stack: error.stack,
+                name: error.name
               });
-              ws.send(JSON.stringify({ type: 'error', error: 'Transcription processing failed' }));
+              ws.send(JSON.stringify({ 
+                type: 'error', 
+                error: 'Transcription processing failed',
+                details: error.message
+              }));
             }
           })();
         } else {
@@ -343,9 +384,14 @@ wss.on('connection', (ws, req) => {
         log.error('Error in transcription stream', {
           error: error.message,
           code: error.code,
-          stack: error.stack
+          stack: error.stack,
+          name: error.name
         });
-        ws.send(JSON.stringify({ type: 'error', error: 'Transcription failed' }));
+        ws.send(JSON.stringify({ 
+          type: 'error', 
+          error: 'Transcription failed',
+          details: error.message
+        }));
       }
     });
 
@@ -353,7 +399,8 @@ wss.on('connection', (ws, req) => {
       log.error('Audio WebSocket error', {
         error: error.message,
         code: error.code,
-        stack: error.stack
+        stack: error.stack,
+        name: error.name
       });
       if (transcribeStream) {
         activeTranscribeStreams.delete(transcribeStream);
