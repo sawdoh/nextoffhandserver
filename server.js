@@ -9,6 +9,30 @@ const http = require('http');
 const fs = require('fs');
 const WebSocket = require('ws');
 
+// Add rate limiting and connection tracking
+const activeTranscribeStreams = new Set();
+const MAX_CONCURRENT_STREAMS = 20; // Leave some buffer below AWS limit of 25
+const RATE_LIMIT_WINDOW = 1000; // 1 second window
+const RATE_LIMIT_MAX = 10; // Max requests per window
+const requestTimestamps = [];
+
+// Rate limiting middleware
+function rateLimiter(req, res, next) {
+  const now = Date.now();
+  requestTimestamps.push(now);
+  
+  // Remove timestamps older than the window
+  while (requestTimestamps[0] < now - RATE_LIMIT_WINDOW) {
+    requestTimestamps.shift();
+  }
+  
+  if (requestTimestamps.length > RATE_LIMIT_MAX) {
+    return res.status(429).json({ error: 'Rate limit exceeded' });
+  }
+  
+  next();
+}
+
 // Enable CORS with more specific headers
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -38,8 +62,13 @@ let videoClients = [];
 let wsClients = [];
 
 // Remove express.raw middleware from /stream-audio
-app.post('/stream-audio', (req, res) => {
+app.post('/stream-audio', rateLimiter, (req, res) => {
   console.log('Received audio stream request');
+  
+  if (activeTranscribeStreams.size >= MAX_CONCURRENT_STREAMS) {
+    return res.status(429).json({ error: 'Maximum concurrent streams reached' });
+  }
+  
   try {
     // Set up AWS Transcribe Streaming
     console.log('Setting up AWS Transcribe streaming...');
@@ -65,10 +94,12 @@ app.post('/stream-audio', (req, res) => {
     // Handle the streaming response
     (async () => {
       try {
-        const response = await transcribeClient.send(command);
+        const stream = await transcribeClient.send(command);
+        activeTranscribeStreams.add(stream);
+        
         console.log('Got response from AWS Transcribe');
         
-        for await (const event of response.TranscriptResultStream) {
+        for await (const event of stream.TranscriptResultStream) {
           console.log('Raw transcript event:', JSON.stringify(event, null, 2));
           if (event.TranscriptEvent) {
             const results = event.TranscriptEvent.Transcript.Results;
@@ -91,6 +122,8 @@ app.post('/stream-audio', (req, res) => {
       } catch (error) {
         console.error('Error in transcription stream:', error);
         res.status(500).json({ error: 'Transcription failed' });
+      } finally {
+        activeTranscribeStreams.delete(stream);
       }
     })();
 
@@ -182,34 +215,56 @@ wss.on('connection', (ws, req) => {
     // Handle audio stream connection
     console.log('Audio stream WebSocket connection established');
     
+    if (activeTranscribeStreams.size >= MAX_CONCURRENT_STREAMS) {
+      ws.send(JSON.stringify({ type: 'error', error: 'Maximum concurrent streams reached' }));
+      ws.close();
+      return;
+    }
+
+    let transcribeStream = null;
+    
     ws.on('message', async (data) => {
       try {
-        // Set up AWS Transcribe Streaming
-        const command = new StartStreamTranscriptionCommand({
-          LanguageCode: 'en-US',
-          MediaEncoding: 'pcm',
-          MediaSampleRateHertz: 16000,
-          AudioStream: (async function* () {
-            yield { AudioEvent: { AudioChunk: data } };
-          })(),
-        });
-
-        const response = await transcribeClient.send(command);
-        console.log('Got response from AWS Transcribe');
-        
-        for await (const event of response.TranscriptResultStream) {
-          console.log('Raw transcript event:', JSON.stringify(event, null, 2));
-          if (event.TranscriptEvent) {
-            const results = event.TranscriptEvent.Transcript.Results;
-            console.log('Transcript results:', JSON.stringify(results, null, 2));
-            if (results && results.length > 0) {
-              const transcript = results[0].Alternatives[0]?.Transcript;
-              if (transcript) {
-                console.log('Received transcript:', transcript);
-                ws.send(JSON.stringify({ type: 'transcript', transcript }));
+        if (!transcribeStream) {
+          // Set up AWS Transcribe Streaming
+          const command = new StartStreamTranscriptionCommand({
+            LanguageCode: 'en-US',
+            MediaEncoding: 'pcm',
+            MediaSampleRateHertz: 16000,
+            AudioStream: (async function* () {
+              while (true) {
+                if (data) {
+                  yield { AudioEvent: { AudioChunk: data } };
+                }
+                await new Promise(resolve => setTimeout(resolve, 100)); // Small delay to prevent CPU overload
               }
+            })(),
+          });
+
+          transcribeStream = await transcribeClient.send(command);
+          activeTranscribeStreams.add(transcribeStream);
+          console.log('Started new transcription stream');
+          
+          // Start processing transcription results
+          (async () => {
+            try {
+              for await (const event of transcribeStream.TranscriptResultStream) {
+                if (event.TranscriptEvent) {
+                  const results = event.TranscriptEvent.Transcript.Results;
+                  if (results && results.length > 0) {
+                    const transcript = results[0].Alternatives[0]?.Transcript;
+                    if (transcript) {
+                      console.log('Received transcript:', transcript);
+                      ws.send(JSON.stringify({ type: 'transcript', transcript }));
+                    }
+                  }
+                }
+              }
+            } catch (error) {
+              console.error('Error processing transcription stream:', error);
+              ws.send(JSON.stringify({ type: 'error', error: 'Transcription processing failed' }));
             }
-          }
+          })();
         }
       } catch (error) {
         console.error('Error in transcription stream:', error);
@@ -219,10 +274,18 @@ wss.on('connection', (ws, req) => {
 
     ws.on('error', (error) => {
       console.error('Audio WebSocket error:', error);
+      if (transcribeStream) {
+        activeTranscribeStreams.delete(transcribeStream);
+        transcribeStream = null;
+      }
     });
 
     ws.on('close', () => {
       console.log('Audio WebSocket connection closed');
+      if (transcribeStream) {
+        activeTranscribeStreams.delete(transcribeStream);
+        transcribeStream = null;
+      }
     });
   } else if (req.url === '/') {
     // Handle video/transcription connection
