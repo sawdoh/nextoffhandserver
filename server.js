@@ -36,52 +36,54 @@ let videoClients = [];
 // Store WebSocket clients
 let wsClients = [];
 
-// Use express.raw only for /stream-audio
-app.post('/stream-audio', express.raw({ type: 'audio/L16', limit: '10mb' }), async (req, res) => {
+// Remove express.raw middleware from /stream-audio
+app.post('/stream-audio', (req, res) => {
   try {
-    console.log('Received audio stream request, size:', req.body.length);
-    // Forward raw PCM audio to WebSocket clients
-    wsClients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({ type: 'audio' })); // signal audio chunk
-        client.send(req.body); // send raw PCM buffer
-      }
+    let data = [];
+    req.on('data', (chunk) => {
+      data.push(chunk);
     });
-    // PCM audio buffer from ESP32-S3-EYE
-    const audioStream = req;
-
-    // Set up AWS Transcribe Streaming
-    const command = new StartStreamTranscriptionCommand({
-      LanguageCode: 'en-US',
-      MediaEncoding: 'pcm',
-      MediaSampleRateHertz: 16000,
-      AudioStream: (async function* () {
-        for await (const chunk of audioStream) {
-          yield { AudioEvent: { AudioChunk: chunk } };
+    req.on('end', async () => {
+      const buffer = Buffer.concat(data);
+      console.log('Received audio stream request, size:', buffer.length);
+      // Forward raw PCM audio to WebSocket clients
+      wsClients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: 'audio' })); // signal audio chunk
+          client.send(buffer); // send raw PCM buffer
         }
-      })(),
-    });
-
-    // Pipe transcription results back to client
-    res.setHeader('Content-Type', 'application/json');
-    const response = await transcribeClient.send(command);
-    for await (const event of response.TranscriptResultStream) {
-      if (event.TranscriptEvent) {
-        const results = event.TranscriptEvent.Transcript.Results;
-        if (results && results.length > 0) {
-          const transcript = results[0].Alternatives[0]?.Transcript;
-          if (transcript) {
-            res.write(JSON.stringify({ transcript }) + '\n');
-            wsClients.forEach(client => {
-              if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({ type: 'transcript', transcript }));
-              }
-            });
+      });
+      // PCM audio buffer from ESP32-S3-EYE
+      // Set up AWS Transcribe Streaming
+      const command = new StartStreamTranscriptionCommand({
+        LanguageCode: 'en-US',
+        MediaEncoding: 'pcm',
+        MediaSampleRateHertz: 16000,
+        AudioStream: (async function* () {
+          yield { AudioEvent: { AudioChunk: buffer } };
+        })(),
+      });
+      // Pipe transcription results back to client
+      res.setHeader('Content-Type', 'application/json');
+      const response = await transcribeClient.send(command);
+      for await (const event of response.TranscriptResultStream) {
+        if (event.TranscriptEvent) {
+          const results = event.TranscriptEvent.Transcript.Results;
+          if (results && results.length > 0) {
+            const transcript = results[0].Alternatives[0]?.Transcript;
+            if (transcript) {
+              res.write(JSON.stringify({ transcript }) + '\n');
+              wsClients.forEach(client => {
+                if (client.readyState === WebSocket.OPEN) {
+                  client.send(JSON.stringify({ type: 'transcript', transcript }));
+                }
+              });
+            }
           }
         }
       }
-    }
-    res.end();
+      res.end();
+    });
   } catch (err) {
     console.error('Transcribe error:', err);
     res.status(500).send('Transcription failed.');
